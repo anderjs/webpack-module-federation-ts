@@ -17,6 +17,12 @@ const webpackConfig = {
     compress: true,
     port: 9200,
   },
+  devtool: "inline-source-map",
+  plugins: [
+    new HtmlWebpackPlugin({
+      template: "./public/index.html",
+    }),
+  ],
 };
 
 module.exports = webpackConfig;
