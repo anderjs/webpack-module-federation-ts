@@ -1,12 +1,7 @@
 import fs from "fs";
 import path from "path";
-import {
-  Compiler,
-  container,
-  Compilation,
-  WebpackPluginInstance,
-} from "webpack";
-import parser from "@babel/parser";
+import { Compiler, container, WebpackPluginInstance } from "webpack";
+import { createPrinter, createSourceFile, EmitHint, forEachChild, isEnumDeclaration, isInterfaceDeclaration, isTypeAliasDeclaration, NewLineKind, Node, ScriptTarget } from "typescript"; // Import TypeScript parser
 
 import { properties } from "./utils";
 
@@ -21,16 +16,17 @@ export interface ModuleFederationTypeScriptPluginOptions {
   path?: string;
   sync?: "folder" | "remote";
   config: ModuleFederationPluginOptions;
+  debug?: boolean;
 }
 
-export class ModuleFederationTypeScriptPlugin
-  implements WebpackPluginInstance
-{
+export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
+  public debug?: boolean;
+
   /**
    * @description
-    * Production build dist folder.
-    */
-    public dir?: string = "dist";
+   * Production build dist folder.
+   */
+  public dir?: string = "dist";
 
   /**
    * @description
@@ -83,12 +79,20 @@ export class ModuleFederationTypeScriptPlugin
    * Configure all options before compilation time.
    */
   constructor(options: ModuleFederationTypeScriptPluginOptions) {
-    this.sync = options.sync;
+    if (options?.path) {
+      this.path = options.path;
+    }
 
-    this.path = options.path;
+    if (options?.sync) {
+      this.sync = options.sync;
+    }
 
-    if (options.dir) {
+    if (options?.dir) {
       this.dir = options.dir;
+    }
+
+    if (options?.debug) {
+      this.debug = options?.debug;
     }
 
     this.config = options.config;
@@ -118,9 +122,9 @@ export class ModuleFederationTypeScriptPlugin
 
         compiler.hooks.afterCompile.tap(
           "Webpack Module Federation TypeScript",
-          (compilation) => {
+          () => {
             if (compiler.options.mode === "development") {
-              this.taskGenerateTypes(compilation);
+              this.taskGenerateTypes(compiler);
             }
           }
         );
@@ -132,42 +136,124 @@ export class ModuleFederationTypeScriptPlugin
     }
   }
 
-
-  public async analyze (file: string) {
-
-  }
-
   /**
    * @description
    * Start doing async work for generated types.
    */
-  public async taskGenerateTypes(compilation: Compilation) {
+  public async taskGenerateTypes(compiler: Compiler) {
     /**
      * @description
      * Check if there's a exposes record.
      */
     if (properties(this.config.exposes)) {
-      await this.exportTypeScriptConfig();
+      this.generateTypes(compiler);
     }
   }
 
-  public async exportTypeScriptConfig() {
-    /**
-     * @description
-     * Checking that this context is declared or path.
-     */
-    if (this.context && this.path) {
-      if (Array.isArray(this.config.exposes)) {
-        const files: string [] = [];
+  public async generateTypes(compiler: Compiler) {
+    const exposes = this.config.exposes;
 
-        for (const file of this.config.exposes) {
-          if (typeof file === "string") {
-            const value = this.analyze(file);
+    if (typeof exposes === "object" && this.context) {
+      for (const alias in exposes) {
+        const exposing = exposes as Record<string, string>;
+
+        /**
+         * @description
+         * File checking.
+         */
+        const file = path.resolve(this.context, exposing[alias]);
+
+        /**
+         * @description
+         * Skipping if the file doesn't contain a TypeScript extension.
+         */
+        if (!flags.test(file)) {
+          continue; 
+        }
+
+        try {
+          const { source } = this.analyze(file);
+
+          if (this.debug) {
+            console.log("Source check", source.getFullText());
           }
+
+          let typeDeclarations = "";
+
+          const parse = (node: Node) => {
+            if (isInterfaceDeclaration(node) || isTypeAliasDeclaration(node) || isEnumDeclaration(node)) {
+              const printer = createPrinter({ newLine: NewLineKind.LineFeed });
+
+              const result = printer.printNode(EmitHint.Unspecified, node, source);
+
+              typeDeclarations += result + '\n\n';
+            }
+        
+            forEachChild(node, parse);
+          }
+        
+          forEachChild(source, parse);
+        
+          /**
+           * @description
+           * Generating types in shared folder.
+           */
+          this.saveTypes(alias, typeDeclarations);
+        } catch (e) {
+          console.error("Fail to generate types", e);
         }
       }
-    } else {
-      throw new Error("Context or path is not declared.");
     }
   }
+
+  public async saveTypes(alias: string, declare: string) {
+    if (this.path && this.context) {
+      const dist = path.join(this.context, this.path);
+
+      const output = path.join(this.context, this.path, `${alias}.d.ts`);
+
+      if (this.debug) {
+        console.log("output path:", output);
+      }
+
+      try {
+        const distContent = fs.readdirSync(dist);
+
+        if (distContent) {
+          if (this.debug) {
+            console.debug("Content", distContent);
+          }
+        }
+      } catch (e) {
+        const shared = fs.mkdirSync(dist);
+
+        if (this.debug) {
+          console.log("Shared:", shared);
+        }
+      }
+
+      fs.writeFileSync(output, declare, "utf-8");
+    }
+  }
+
+  public analyze(file: string) {
+    const code = fs.readFileSync(file, "utf-8");
+
+    if (this.debug) {
+      console.debug("Checking", {
+        file,
+        code,
+      });
+    }
+
+    const source = createSourceFile(file, code, ScriptTarget.Latest, true);
+
+    return {
+      code,
+      source,
+    };
+  }
 }
+
+
+const flags = new RegExp(/\.(ts|tsx)$/);

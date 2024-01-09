@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "cd src && cd __tests__ && npm start"
+    "test": "cd src && cd __tests__ && cd example && npm start",
+    "build": "tsc"
   },
   "keywords": [],
   "author": "",
