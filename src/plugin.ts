@@ -1,7 +1,18 @@
 import fs from "fs";
 import path from "path";
 import { Compiler, container, WebpackPluginInstance } from "webpack";
-import { createPrinter, createSourceFile, EmitHint, forEachChild, isEnumDeclaration, isInterfaceDeclaration, isTypeAliasDeclaration, NewLineKind, Node, ScriptTarget } from "typescript"; // Import TypeScript parser
+import {
+  Node,
+  EmitHint,
+  NewLineKind,
+  forEachChild,
+  ScriptTarget,
+  createPrinter,
+  createSourceFile,
+  isEnumDeclaration,
+  isInterfaceDeclaration,
+  isTypeAliasDeclaration,
+} from "typescript"; // Import TypeScript parser
 
 import { properties } from "./utils";
 
@@ -75,8 +86,8 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
   public context?: Compiler["context"];
 
   /**
-   * @description
-   * Configure all options before compilation time.
+   * Creates an instance of ModuleFederationTypeScriptPlugin.
+   * @param options - The plugin options.
    */
   constructor(options: ModuleFederationTypeScriptPluginOptions) {
     if (options?.path) {
@@ -98,6 +109,10 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
     this.config = options.config;
   }
 
+  /**
+   * Applies the plugin instance to the webpack compiler.
+   * @param compiler - The webpack compiler instance.
+   */
   public apply(compiler: Compiler) {
     /**
      * @description
@@ -137,8 +152,8 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
   }
 
   /**
-   * @description
-   * Start doing async work for generated types.
+   * Starts the process of generating TypeScript types.
+   * @param compiler - The webpack compiler instance.
    */
   public async taskGenerateTypes(compiler: Compiler) {
     /**
@@ -146,11 +161,15 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
      * Check if there's a exposes record.
      */
     if (properties(this.config.exposes)) {
-      this.generateTypes(compiler);
+      this.generateTypes();
     }
   }
 
-  public async generateTypes(compiler: Compiler) {
+  /**
+   * Generates TypeScript types for exposed modules.
+   * @param compiler - The webpack compiler instance.
+   */
+  public async generateTypes() {
     const exposes = this.config.exposes;
 
     if (typeof exposes === "object" && this.context) {
@@ -168,7 +187,7 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
          * Skipping if the file doesn't contain a TypeScript extension.
          */
         if (!flags.test(file)) {
-          continue; 
+          continue;
         }
 
         try {
@@ -181,19 +200,27 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
           let typeDeclarations = "";
 
           const parse = (node: Node) => {
-            if (isInterfaceDeclaration(node) || isTypeAliasDeclaration(node) || isEnumDeclaration(node)) {
+            if (
+              isInterfaceDeclaration(node) ||
+              isTypeAliasDeclaration(node) ||
+              isEnumDeclaration(node)
+            ) {
               const printer = createPrinter({ newLine: NewLineKind.LineFeed });
 
-              const result = printer.printNode(EmitHint.Unspecified, node, source);
+              const result = printer.printNode(
+                EmitHint.Unspecified,
+                node,
+                source
+              );
 
-              typeDeclarations += result + '\n\n';
+              typeDeclarations += result + "\n\n";
             }
-        
+
             forEachChild(node, parse);
-          }
-        
+          };
+
           forEachChild(source, parse);
-        
+
           /**
            * @description
            * Generating types in shared folder.
@@ -206,6 +233,11 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
     }
   }
 
+  /**
+   * Saves generated TypeScript types to a file.
+   * @param alias - The alias of the module.
+   * @param declare - The type declarations to be saved.
+   */
   public async saveTypes(alias: string, declare: string) {
     if (this.path && this.context) {
       const dist = path.join(this.context, this.path);
@@ -236,6 +268,11 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
     }
   }
 
+  /**
+   * Analyzes a file and extracts TypeScript code.
+   * @param file - The file to be analyzed.
+   * @returns An object containing the source code and the TypeScript source file.
+   */
   public analyze(file: string) {
     const code = fs.readFileSync(file, "utf-8");
 
@@ -254,6 +291,5 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
     };
   }
 }
-
 
 const flags = new RegExp(/\.(ts|tsx)$/);
