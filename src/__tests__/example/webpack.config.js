@@ -7,7 +7,7 @@ const config = {
   name: "example",
   filename: "remoteEntry.js",
   exposes: {
-    "./AudioPlayer": "./src/Component.tsx",
+    "./AudioPlayer": "./src/AudioPlayer.tsx",
   },
 };
 
@@ -16,6 +16,18 @@ const config = {
  */
 const webpackConfig = {
   entry: "./src/index.js",
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: "ts-loader",
+        exclude: /node_modules/,
+      },
+    ],
+  },
+  resolve: {
+    extensions: [".tsx", ".ts", ".js"],
+  },
   output: {
     path: path.resolve(__dirname, "build"),
     filename: "app.bundle.js",

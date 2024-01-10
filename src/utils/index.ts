@@ -4,4 +4,6 @@ export function properties<T>(target: T) {
   }
 
   console.log("No exposes property, skipping.");
+
+  return false;
 }

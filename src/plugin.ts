@@ -1,5 +1,7 @@
 import fs from "fs";
 import path from "path";
+import request from "superagent";
+import prettier from "prettier";
 import { Compiler, container, WebpackPluginInstance } from "webpack";
 import {
   Node,
@@ -12,6 +14,7 @@ import {
   isEnumDeclaration,
   isInterfaceDeclaration,
   isTypeAliasDeclaration,
+  SourceFile,
 } from "typescript"; // Import TypeScript parser
 
 import { properties } from "./utils";
@@ -25,6 +28,7 @@ export type ModuleFederationPluginOptions = ConstructorParameters<
 export interface ModuleFederationTypeScriptPluginOptions {
   dir?: string;
   path?: string;
+  host?: string;
   sync?: "folder" | "remote";
   config: ModuleFederationPluginOptions;
   debug?: boolean;
@@ -69,12 +73,6 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
 
   /**
    * @description
-   * Compiler options of tsconfig.
-   */
-  public tsCompiler: any;
-
-  /**
-   * @description
    * Module Federation config.
    */
   public config: ModuleFederationPluginOptions;
@@ -85,6 +83,11 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
    */
   public context?: Compiler["context"];
 
+  /**
+   * @description
+   * Flag.
+   */
+  public done: boolean = false;
   /**
    * Creates an instance of ModuleFederationTypeScriptPlugin.
    * @param options - The plugin options.
@@ -137,9 +140,23 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
 
         compiler.hooks.afterCompile.tap(
           "Webpack Module Federation TypeScript",
-          () => {
+          async (compilation) => {
+            if (compilation.errors && compilation.errors.length > 0) {
+              compilation.errors.forEach((err) => console.error(err.message));
+
+              console.error(
+                "Compilation errors found. Plugin execution stopped."
+              );
+
+              return;
+            }
+
             if (compiler.options.mode === "development") {
-              this.taskGenerateTypes(compiler);
+              if (this.done === false) {
+                await this.taskGenerateTypes(compiler);
+
+                this.done = true;
+              }
             }
           }
         );
@@ -161,7 +178,65 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
      * Check if there's a exposes record.
      */
     if (properties(this.config.exposes)) {
-      this.generateTypes();
+      await this.generateTypesForExposes();
+    }
+
+    /**
+     * @description
+     * Check if there's a remotes record.
+     */
+    if (properties(this.config.remotes)) {
+      await this.generateTypesForRemotes();
+    }
+
+    return 0;
+  }
+
+  public async generateTypesForRemotes() {
+    const remotes = this.config.remotes;
+
+    if (typeof remotes === "object" && this.context) {
+      for (const resource in remotes) {
+        const fetching = remotes as Record<string, string>;
+
+        if (this.debug) {
+          console.debug("Downloading...", fetching[resource]);
+        }
+
+        try {
+          const response = await request.get(
+            "http://localhost:8080/index.d.ts"
+          );
+
+          if (response.ok && this.path) {
+            const dist = path.join(this.context, this.path);
+
+            const code = response.text;
+
+            const output = path.join(dist, "index.d.ts");
+
+            try {
+              const distContent = fs.readdirSync(dist);
+
+              if (distContent) {
+                if (this.debug) {
+                  console.debug("Content", distContent);
+                }
+              }
+            } catch (e) {
+              const shared = fs.mkdirSync(dist);
+
+              if (this.debug) {
+                console.log("Shared:", shared);
+              }
+            }
+
+            fs.writeFileSync(output, code, "utf-8");
+          }
+        } catch (e) {
+          console.error("Fail to fetch source code: ", e);
+        }
+      }
     }
   }
 
@@ -169,23 +244,17 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
    * Generates TypeScript types for exposed modules.
    * @param compiler - The webpack compiler instance.
    */
-  public async generateTypes() {
+  public async generateTypesForExposes() {
     const exposes = this.config.exposes;
 
     if (typeof exposes === "object" && this.context) {
+      let allTypeDeclarations = "";
+
       for (const alias in exposes) {
         const exposing = exposes as Record<string, string>;
 
-        /**
-         * @description
-         * File checking.
-         */
         const file = path.resolve(this.context, exposing[alias]);
 
-        /**
-         * @description
-         * Skipping if the file doesn't contain a TypeScript extension.
-         */
         if (!flags.test(file)) {
           continue;
         }
@@ -194,43 +263,59 @@ export class ModuleFederationTypeScriptPlugin implements WebpackPluginInstance {
           const { source } = this.analyze(file);
 
           if (this.debug) {
+            console.log("Exposes", exposing);
+
             console.log("Source check", source.getFullText());
           }
 
-          let typeDeclarations = "";
+          let typeDeclarations = this.extractTypeDeclarations(source);
 
-          const parse = (node: Node) => {
-            if (
-              isInterfaceDeclaration(node) ||
-              isTypeAliasDeclaration(node) ||
-              isEnumDeclaration(node)
-            ) {
-              const printer = createPrinter({ newLine: NewLineKind.LineFeed });
+          const component = alias.lastIndexOf("/") + 1;
 
-              const result = printer.printNode(
-                EmitHint.Unspecified,
-                node,
-                source
-              );
+          const resolve = alias.substring(component);
 
-              typeDeclarations += result + "\n\n";
-            }
+          const propsName = `${resolve}Props`;
 
-            forEachChild(node, parse);
-          };
-
-          forEachChild(source, parse);
-
-          /**
-           * @description
-           * Generating types in shared folder.
-           */
-          this.saveTypes(alias, typeDeclarations);
+          allTypeDeclarations += `declare module "${this.path}/${resolve}" {\n${typeDeclarations}\n \nconst ${resolve}: React.FunctionComponent<${propsName}>;\nexport default ${resolve};\n}\n`;
         } catch (e) {
           console.error("Fail to generate types", e);
         }
       }
+
+      if (allTypeDeclarations) {
+        const formattedTypeDeclarations = await prettier.format(
+          allTypeDeclarations,
+          {
+            parser: "typescript",
+          }
+        );
+
+        this.saveTypes("index", formattedTypeDeclarations);
+      }
     }
+  }
+
+  private extractTypeDeclarations(source: SourceFile): string {
+    let declarations = "";
+
+    const printer = createPrinter({ newLine: NewLineKind.LineFeed });
+
+    const extract = (node: Node) => {
+      if (
+        isInterfaceDeclaration(node) ||
+        isTypeAliasDeclaration(node) ||
+        isEnumDeclaration(node)
+      ) {
+        const result = printer.printNode(EmitHint.Unspecified, node, source);
+
+        declarations += result + "\n\n";
+      }
+      forEachChild(node, extract);
+    };
+
+    forEachChild(source, extract);
+
+    return declarations;
   }
 
   /**

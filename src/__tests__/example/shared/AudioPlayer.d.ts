@@ -1,4 +1,0 @@
-interface Props {
-    value: string;
-}
-
